@@ -93,10 +93,11 @@ function createPackedUserOperation(
     ['uint128', 'uint128'],
     [maxPriorityFeePerGas, maxFeePerGas]
   );
-  const payMaster = encodePacked(
-    ['address', 'uint128', 'uint128'],
-    [payer, verificationGasLimit, postGasLimit]
-  );
+  // const payMaster = encodePacked(
+  //   ['address', 'uint128', 'uint128'],
+  //   [payer, verificationGasLimit, postGasLimit]
+  // );
+  const payMaster = '0x';
   return {
     sender,
     nonce,
@@ -105,7 +106,7 @@ function createPackedUserOperation(
     accountGasLimits,
     preVerificationGas: 21_000n,
     gasFees,
-    paymasterAndData: '0x',
+    paymasterAndData: payMaster,
     signature: '0x'
   };
 }
@@ -237,11 +238,11 @@ async function main() {
   console.log("EOA private key (save this to reuse):", EOA_PRIVATE_KEY);
 
   // 1. Fund the EOA so it can pay for its own delegation transaction.
-  const fundHash = await funderWallet.sendTransaction({
-    to: eoaAccount.address,
-    value: parseEther("10"),
-  });
-  await publicClient.waitForTransactionReceipt({ hash: fundHash });
+  // const fundHash = await funderWallet.sendTransaction({
+  //   to: eoaAccount.address,
+  //   value: parseEther("10"),
+  // });
+  // await publicClient.waitForTransactionReceipt({ hash: fundHash });
   let balance = await publicClient.getBalance({ address: eoaAccount.address });
   console.log("Funded EOA. Balance:", balance.toString(), "wei");
 
@@ -253,7 +254,7 @@ async function main() {
     account: eoaAccount,
     contractAddress: COUNTER_ADDRESS,
   });
-  console.log("Authorization signed:", authorization);
+  // console.log("Authorization signed:", authorization);
 
   // 3. Broadcast a transaction carrying the authorization list.
   //     This actually writes `0xef0100 || COUNTER_ADDRESS` into the EOA's code.
