@@ -14,6 +14,9 @@ contract Counter {
         number++;
     }
 
-    receive() external payable {}
+    /// @dev Kept virtual so that derived contracts (e.g. {CounterAA}) can override the
+    ///      definition inherited from their other bases.
+    receive() external payable virtual {}
+
     fallback() external payable {}
 }
