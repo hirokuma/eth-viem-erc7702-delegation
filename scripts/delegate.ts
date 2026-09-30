@@ -1,21 +1,180 @@
 // scripts/delegate.ts
-// A minimal sample that registers a deployed Counter contract as an ERC-7702
-// delegation for a fresh EOA, then calls the Counter code on the EOA address.
-// Uses viem v2's EIP-7702 APIs: executor: 'self' is required when the EOA
-// itself submits the delegation transaction.
+// A minimal sample that registers a deployed CounterAA contract as an ERC-7702
+// delegation for a fresh EOA, then drives the delegated account through an
+// ERC-4337 user operation signed by the EOA itself ({SignerEIP7702}).
+// The funder wallet pays for everything: it broadcasts the delegation
+// transaction and pre-deposits to the EntryPoint, so the delegated EOA never
+// needs to hold ETH of its own.
 
 import "dotenv/config";
 import {
   createPublicClient,
   createWalletClient,
+  encodePacked,
+  encodeFunctionData,
   http,
   parseAbi,
   parseEther,
+  recoverAddress,
   type Address,
   type Chain,
+  type Hex,
+  type PublicClient,
 } from "viem";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import { mainnet } from "viem/chains";
+
+// ---------------------------------------------------------------------------
+// PackedUserOperation
+// ---------------------------------------------------------------------------
+type PackedUserOperation = {
+  sender: Address;
+  nonce: bigint;
+  initCode: Hex;
+  callData: Hex;
+  accountGasLimits: Hex;   // bytes32
+  preVerificationGas: bigint;
+  gasFees: Hex;            // bytes32
+  paymasterAndData: Hex; // paymaster(20) || verificationGasLimit(16) || postOpGasLimit(16) || paymasterData
+  signature: Hex;
+};
+
+const PackedUserOperationComponent = [
+  { name: 'sender', type: 'address' },
+  { name: 'nonce', type: 'uint256' },
+  { name: 'initCode', type: 'bytes' },
+  { name: 'callData', type: 'bytes' },
+  { name: 'accountGasLimits', type: 'bytes32' },
+  { name: 'preVerificationGas', type: 'uint256' },
+  { name: 'gasFees', type: 'bytes32' },
+  { name: 'paymasterAndData', type: 'bytes' },
+  { name: 'signature', type: 'bytes' }
+];
+
+const entryPointAddress = '0x433709009B8330FDa32311DF1C2AFA402eD8D009';
+
+const NONCE_KEY = 0x123400000000000000000000000000000000000000000000n;
+
+// ERC-7821 "default" execution mode: batch of calls, revert on failure, no opData.
+const MODE_DEFAULT: Hex =
+  '0x0100000000000000000000000000000000000000000000000000000000000000';
+const verificationGasLimit = 150_000n;
+const callGasLimit = 500_000n;
+const postGasLimit = 500_000n;
+const maxPriorityFeePerGas = 2_000_000_000n;
+const maxFeePerGas = 1_000_000_000n;
+
+async function getNonce(client: PublicClient, account: Address, nonceKey: bigint): Promise<bigint> {
+  // https://github.com/eth-infinitism/account-abstraction/blob/v0.9.0/contracts/interfaces/INonceManager.sol#L15-L16
+  // nonce = ['uint192': key]['uint64': sequence] になっているので、UserOperationを処理するとnonceからkeyを取ってきて自動でインクリメントされる
+  const nonce = await client.readContract({
+    address: entryPointAddress,
+    abi: parseAbi([
+      'function getNonce(address sender, uint192 key) external view returns (uint256 nonce)',
+    ]),
+    functionName: 'getNonce',
+    args: [account, nonceKey]
+  }) as bigint;
+  return nonce;
+}
+
+
+function createPackedUserOperation(
+  sender: Address,
+  payer: Address,
+  nonce: bigint,
+  callData: Hex,
+): PackedUserOperation {
+  const accountGasLimits = encodePacked(
+    ['uint128', 'uint128'],
+    [verificationGasLimit, callGasLimit]
+  );
+  const gasFees = encodePacked(
+    ['uint128', 'uint128'],
+    [maxPriorityFeePerGas, maxFeePerGas]
+  );
+  const payMaster = encodePacked(
+    ['address', 'uint128', 'uint128'],
+    [payer, verificationGasLimit, postGasLimit]
+  );
+  return {
+    sender,
+    nonce,
+    initCode: '0x',
+    callData,
+    accountGasLimits,
+    preVerificationGas: 21_000n,
+    gasFees,
+    paymasterAndData: '0x',
+    signature: '0x'
+  };
+}
+
+async function getUserOpHash(client: PublicClient, op: PackedUserOperation): Promise<Hex> {
+  const hash = await client.readContract({
+    address: entryPointAddress,
+    abi: [
+      {
+        type: 'function',
+        name: 'getUserOpHash',
+        stateMutability: 'view',
+        inputs: [
+          {
+            name: 'userOp',
+            type: 'tuple',
+            components: PackedUserOperationComponent
+          }
+        ],
+        outputs: [{ type: 'bytes32' }]
+      }
+    ] as const,
+    functionName: 'getUserOpHash',
+    args: [op]
+  });
+  return hash;
+}
+
+/**
+ * Signs a PackedUserOperation so that {CounterAA} accepts it.
+ *
+ * CounterAA inherits {SignerEIP7702}, whose `_rawSignatureValidation` recovers an
+ * address from the *raw* hash and requires it to equal `address(this)` — the EOA
+ * the code is delegated to. The signature is therefore a plain 65-byte
+ * `r || s || v` ECDSA signature over the EntryPoint's `userOpHash`:
+ *
+ *   - no EIP-191 prefix (`eth_sign` style),
+ *   - no ERC-7739 nested EIP-712 envelope.
+ *
+ * {Account-_signableUserOpHash} is not overridden by CounterAA, so the value
+ * returned by `EntryPoint.getUserOpHash` is signed as-is.
+ */
+async function signPackedUserOperation(
+  client: PublicClient,
+  po: PackedUserOperation,
+  signer: Address,
+  privateKey: Hex
+): Promise<Hex> {
+  // Always read the hash back from the EntryPoint: it is the EIP-712 hash over
+  // the (EIP-7702 aware) repacking of the op, so recomputing it locally in JS is
+  // easy to get out of sync.
+  const hash = await getUserOpHash(client, po);
+
+  const account = privateKeyToAccount(privateKey);
+
+  // SignerEIP7702 recovers directly from `hash`, so sign the hash itself.
+  const signature = await account.sign({ hash });
+
+  // CounterAA compares the recovered signer with `address(this)`, i.e. the EOA
+  // that the code is delegated to. A mismatch shows up as "AA24 signature error".
+  const recovered = await recoverAddress({ hash, signature });
+  if (recovered.toLowerCase() !== signer.toLowerCase()) {
+    throw new Error(
+      `signPackedUserOperation: recovered ${recovered} but expected ${signer}`
+    );
+  }
+
+  return signature;
+}
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -120,13 +279,66 @@ async function main() {
   });
   console.log("EOA.number() after setNumber(42):", numberAfterSet.toString());
 
+  balance = await publicClient.getBalance({ address: eoaAccount.address });
+  console.log("EOA Balance1:", balance.toString(), "wei");
+
   // 5. Call increment() on the EOA address. No authorization needed anymore
   //    because the EOA code is already delegated.
-  const incHash = await eoaWallet.writeContract({
-    address: eoaAccount.address,
-    abi: counterAbi,
-    functionName: "increment",
+
+  // funder から: EntryPoint.depositTo(eoaAccount.address)
+  await funderWallet.writeContract({
+    address: entryPointAddress,
+    abi: parseAbi(["function depositTo(address account) payable"]),
+    functionName: "depositTo",
+    args: [eoaAccount.address],
+    value: parseEther("0.1"),
   });
+
+  const nonce = await getNonce(publicClient, eoaAccount.address, NONCE_KEY);
+  const incCallData = encodeFunctionData({
+    abi: parseAbi([
+      'function increment() public',
+    ]),
+    functionName: 'increment',
+    args: []
+  });
+  const unsignedOp = createPackedUserOperation(eoaAccount.address, funderAccount.address, nonce, incCallData);
+  const signature = await signPackedUserOperation(publicClient, unsignedOp, eoaAccount.address, EOA_PRIVATE_KEY);
+  const signedOp: PackedUserOperation = { ...unsignedOp, signature: signature };
+
+  balance = await publicClient.getBalance({ address: eoaAccount.address });
+  console.log("EOA Balance2:", balance.toString(), "wei");
+
+  // EntryPoint v0.9 handleOps
+  const incHash = await funderWallet.writeContract({
+    address: entryPointAddress,
+    abi: [
+      {
+        type: 'function',
+        name: 'handleOps',
+        stateMutability: 'payable',
+        inputs: [
+          {
+            name: 'ops',
+            type: 'tuple[]',
+            components: PackedUserOperationComponent
+          },
+          {
+            name: 'beneficiary',
+            type: 'address'
+          }
+        ],
+        outputs: []
+      }
+    ] as const,
+    functionName: 'handleOps',
+    args: [[signedOp], funderAccount.address],
+    value: 0n
+  });
+
+  balance = await publicClient.getBalance({ address: eoaAccount.address });
+  console.log("EOA Balance3:", balance.toString(), "wei");
+
   await publicClient.waitForTransactionReceipt({ hash: incHash });
 
   const numberAfterInc = await publicClient.readContract({
