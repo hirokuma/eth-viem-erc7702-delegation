@@ -83,7 +83,7 @@ async function main() {
     value: parseEther("10"),
   });
   await publicClient.waitForTransactionReceipt({ hash: fundHash });
-  const balance = await publicClient.getBalance({ address: eoaAccount.address });
+  let balance = await publicClient.getBalance({ address: eoaAccount.address });
   console.log("Funded EOA. Balance:", balance.toString(), "wei");
 
   // 2. Sign the EIP-7702 authorization that points the EOA code to Counter.
@@ -91,14 +91,14 @@ async function main() {
   //    the EIP-7702 transaction. Viem adjusts the authorization nonce by +1
   //    to account for the transaction's own nonce increment.
   const authorization = await eoaWallet.signAuthorization({
+    account: eoaAccount,
     contractAddress: COUNTER_ADDRESS,
-    executor: "self",
   });
   console.log("Authorization signed:", authorization);
 
   // 3. Broadcast a transaction carrying the authorization list.
   //     This actually writes `0xef0100 || COUNTER_ADDRESS` into the EOA's code.
-  const setHash = await eoaWallet.writeContract({
+  const setHash = await funderWallet.writeContract({
     address: eoaAccount.address, // the EOA itself becomes the contract
     abi: counterAbi,
     functionName: "setNumber",
@@ -143,6 +143,9 @@ async function main() {
   if (numberAfterInc !== 43n) {
     throw new Error("Delegation did not work as expected");
   }
+
+  balance = await publicClient.getBalance({ address: eoaAccount.address });
+  console.log("After EOA Balance:", balance.toString(), "wei");
 
   console.log("\nERC-7702 delegation sample completed successfully!");
 }
