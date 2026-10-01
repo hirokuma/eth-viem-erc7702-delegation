@@ -51,6 +51,7 @@ const PackedUserOperationComponent = [
 ];
 
 const entryPointAddress = '0x433709009B8330FDa32311DF1C2AFA402eD8D009';
+const simpleSmartAccount = '0xa46cc63eBF4Bd77888AA327837d20b23A63a56B5';
 const myPayMasterAddress = '0xe7f1725e7734ce288f8367e1bb143e90bb3f0512';
 
 const NONCE_KEY = 0x123400000000000000000000000000000000000000000000n;
@@ -184,17 +185,19 @@ const RPC_URL = "http://localhost:8545";
 // Anvil default funded account (index 0). Used to pay gas for the EOA.
 const FUNDER_PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
-// The deployed Counter contract address. Set via env or update after running
-// `pnpm deploy:anvil`.
-const COUNTER_ADDRESS: Address = "0x5fbdb2315678afecb367f032d93f642f64180aa3";
-
 // Generate a brand new EOA for the delegation demo, or import from env.
 const EOA_PRIVATE_KEY = generatePrivateKey();
 
-const counterAbi = parseAbi([
-  "function number() view returns (uint256)",
-  "function setNumber(uint256 newNumber) public",
-  "function increment() public",
+const accountAbi = parseAbi([
+  // Simple7702Account (BaseAccount) のメソッド
+  "function entryPoint() view returns (address)",
+  "function getNonce() view returns (uint256)",
+  "function execute(address target, uint256 value, bytes data)",
+  "function executeBatch((address target, uint256 value, bytes data)[] calls)",
+  "function isValidSignature(bytes32 hash, bytes sig) view returns (bytes4)",
+  "function validateUserOp((address,uint256,bytes,bytes,bytes32,uint256,bytes32,bytes,bytes) userOp, bytes32 userOpHash, uint256 missingAccountFunds) returns (uint256)",
+  "fallback() external payable",
+  "receive() external payable",
 ]);
 
 // Minimal local chain definition matching Anvil's chain id.
@@ -227,7 +230,6 @@ const funderWallet = createWalletClient({
 
 async function main() {
   console.log("RPC URL:", RPC_URL);
-  console.log("Counter (delegation target):", COUNTER_ADDRESS);
   console.log("EOA address:", eoaAccount.address);
   console.log("EOA private key (save this to reuse):", EOA_PRIVATE_KEY);
 
@@ -240,42 +242,44 @@ async function main() {
   let balance = await publicClient.getBalance({ address: eoaAccount.address });
   console.log("Funded EOA. Balance:", balance.toString(), "wei");
 
-  // 2. Sign the EIP-7702 authorization that points the EOA code to Counter.
-  //    executor: 'self' is required because the authorizing EOA also submits
-  //    the EIP-7702 transaction. Viem adjusts the authorization nonce by +1
-  //    to account for the transaction's own nonce increment.
+  // 2. EOA code を Simple7702Account に向ける authorization に署名する。
+  //    これを broadcast するのは funder（＝EOA とは別アカウント）なので
+  //    executor は 'self' にしてはいけない。未指定なら viem は
+  //    「別アカウントが実行」と解釈し、nonce は EOA の現在値のまま（+1 しない）。
   const authorization = await eoaWallet.signAuthorization({
     account: eoaAccount,
-    contractAddress: COUNTER_ADDRESS,
+    contractAddress: simpleSmartAccount,
+    // executor: funderAccount.address, // 明示する場合（省略時と同じ結果）
   });
-  // console.log("Authorization signed:", authorization);
 
-  // 3. Broadcast a transaction carrying the authorization list.
-  //     This actually writes `0xef0100 || COUNTER_ADDRESS` into the EOA's code.
-  const setHash = await funderWallet.writeContract({
-    address: eoaAccount.address, // the EOA itself becomes the contract
-    abi: counterAbi,
-    functionName: "setNumber",
-    args: [42n],
+  // 3. authorizationList を載せた tx を broadcast する。
+  //    これで EOA の code が `0xef0100 || simpleSmartAccount` に書き換わる。
+  //    Simple7702Account は fallback/receive が payable なので、
+  //    本体呼び出し（空 calldata → receive）はそのまま成功する。
+  const setHash = await funderWallet.sendTransaction({
+    to: eoaAccount.address,
+    value: 0n,
     authorizationList: [authorization],
   });
-  const receipt = await publicClient.waitForTransactionReceipt({
-    hash: setHash,
-  });
-  console.log("Delegation + setNumber tx:", setHash);
+  const receipt = await publicClient.waitForTransactionReceipt({ hash: setHash });
+  console.log("Delegation tx:", setHash);
   console.log("  status:", receipt.status);
   console.log("  gasUsed:", receipt.gasUsed.toString());
 
-  // 4. Read the Counter storage from the EOA address.
-  const numberAfterSet = await publicClient.readContract({
+  // 4. EOA 経由で Simple7702Account が返ることを確認（＝delegate 成功）。
+  const ep = await publicClient.readContract({
     address: eoaAccount.address,
-    abi: counterAbi,
-    functionName: "number",
+    abi: accountAbi,
+    functionName: "entryPoint",
   });
-  console.log("EOA.number() after setNumber(42):", numberAfterSet.toString());
+  console.log("EOA.entryPoint():", ep);
+  if (ep.toLowerCase() !== entryPointAddress.toLowerCase()) {
+    throw new Error(`delegation not applied: entryPoint()=${ep}`);
+  }
 
   balance = await publicClient.getBalance({ address: eoaAccount.address });
   console.log("EOA Balance1:", balance.toString(), "wei");
+  return;
 
   // 5. Call increment() on the EOA address. No authorization needed anymore
   //    because the EOA code is already delegated.
