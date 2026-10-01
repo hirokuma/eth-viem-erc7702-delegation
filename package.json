@@ -5,8 +5,10 @@
   "main": "index.ts",
   "scripts": {
     "deploy": "pnpm run deploy:anvil && pnpm run deploy:entrypoint",
-    "deploy:anvil": "forge script script/Counter.s.sol:CounterScript --fork-url http://localhost:8545 --broadcast --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+    "deploy:anvil": "forge script script/Deploy.s.sol:DeployScript --fork-url http://localhost:8545 --broadcast --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
     "deploy:entrypoint": "cd ./lib/account-abstraction && yarn install && yarn deploy --network localhost",
+    "deposit": "cast send 0x433709009B8330FDa32311DF1C2AFA402eD8D009 \"depositTo(address)\" 0xe7f1725e7734ce288f8367e1bb143e90bb3f0512 --value 0.1ether --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+    "getdeposit": "cast call 0x433709009B8330FDa32311DF1C2AFA402eD8D009 \"balanceOf(address)\" 0xe7f1725e7734ce288f8367e1bb143e90bb3f0512 | cast to-dec | cast from-wei",
     "delegate": "tsx scripts/delegate.ts",
     "test": "echo \"Run: anvil (terminal 1), forge script deploy:anvil (terminal 2), pnpm delegate (terminal 3)\""
   },

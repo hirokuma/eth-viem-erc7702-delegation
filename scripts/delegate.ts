@@ -14,7 +14,6 @@ import {
   encodeFunctionData,
   http,
   parseAbi,
-  parseEther,
   recoverAddress,
   type Address,
   type Chain,
@@ -52,6 +51,7 @@ const PackedUserOperationComponent = [
 ];
 
 const entryPointAddress = '0x433709009B8330FDa32311DF1C2AFA402eD8D009';
+const myPayMasterAddress = '0xe7f1725e7734ce288f8367e1bb143e90bb3f0512';
 
 const NONCE_KEY = 0x123400000000000000000000000000000000000000000000n;
 
@@ -81,7 +81,6 @@ async function getNonce(client: PublicClient, account: Address, nonceKey: bigint
 
 function createPackedUserOperation(
   sender: Address,
-  payer: Address,
   nonce: bigint,
   callData: Hex,
 ): PackedUserOperation {
@@ -93,11 +92,11 @@ function createPackedUserOperation(
     ['uint128', 'uint128'],
     [maxPriorityFeePerGas, maxFeePerGas]
   );
-  // const payMaster = encodePacked(
-  //   ['address', 'uint128', 'uint128'],
-  //   [payer, verificationGasLimit, postGasLimit]
-  // );
-  const payMaster = '0x';
+  const payMaster = encodePacked(
+    ['address', 'uint128', 'uint128'],
+    [myPayMasterAddress, verificationGasLimit, postGasLimit]
+  );
+  // const payMaster = '0x';
   return {
     sender,
     nonce,
@@ -180,22 +179,17 @@ async function signPackedUserOperation(
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
-const RPC_URL = process.env.RPC_URL || "http://localhost:8545";
+const RPC_URL = "http://localhost:8545";
 
 // Anvil default funded account (index 0). Used to pay gas for the EOA.
-const FUNDER_PRIVATE_KEY =
-  (process.env.FUNDER_PRIVATE_KEY as `0x${string}`) ||
-  "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+const FUNDER_PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
 // The deployed Counter contract address. Set via env or update after running
 // `pnpm deploy:anvil`.
-const COUNTER_ADDRESS: Address =
-  (process.env.COUNTER_ADDRESS as Address) ||
-  "0x5fbdb2315678afecb367f032d93f642f64180aa3";
+const COUNTER_ADDRESS: Address = "0x5fbdb2315678afecb367f032d93f642f64180aa3";
 
 // Generate a brand new EOA for the delegation demo, or import from env.
-const EOA_PRIVATE_KEY =
-  (process.env.EOA_PRIVATE_KEY as `0x${string}`) || generatePrivateKey();
+const EOA_PRIVATE_KEY = generatePrivateKey();
 
 const counterAbi = parseAbi([
   "function number() view returns (uint256)",
@@ -286,14 +280,14 @@ async function main() {
   // 5. Call increment() on the EOA address. No authorization needed anymore
   //    because the EOA code is already delegated.
 
-  // funder から: EntryPoint.depositTo(eoaAccount.address)
-  await funderWallet.writeContract({
-    address: entryPointAddress,
-    abi: parseAbi(["function depositTo(address account) payable"]),
-    functionName: "depositTo",
-    args: [eoaAccount.address],
-    value: parseEther("0.1"),
-  });
+  // // funder から: EntryPoint.depositTo(eoaAccount.address)
+  // await funderWallet.writeContract({
+  //   address: entryPointAddress,
+  //   abi: parseAbi(["function depositTo(address account) payable"]),
+  //   functionName: "depositTo",
+  //   args: [eoaAccount.address],
+  //   value: parseEther("0.1"),
+  // });
 
   const nonce = await getNonce(publicClient, eoaAccount.address, NONCE_KEY);
   const incCallData = encodeFunctionData({
@@ -303,7 +297,7 @@ async function main() {
     functionName: 'increment',
     args: []
   });
-  const unsignedOp = createPackedUserOperation(eoaAccount.address, funderAccount.address, nonce, incCallData);
+  const unsignedOp = createPackedUserOperation(eoaAccount.address, nonce, incCallData);
   const signature = await signPackedUserOperation(publicClient, unsignedOp, eoaAccount.address, EOA_PRIVATE_KEY);
   const signedOp: PackedUserOperation = { ...unsignedOp, signature: signature };
 

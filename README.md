@@ -46,14 +46,19 @@ pnpm deploy
 The default deployed address on a fresh Anvil instance is:
 
 ```
-0x5FbDB2315678afecb367f032d93F642f64180aa3
+EntryPoint: 0x433709009B8330FDa32311DF1C2AFA402eD8D009
+CounterAA: 0x5FbDB2315678afecb367f032d93F642f64180aa3
+MyPaymaster: 0xe7f1725e7734ce288f8367e1bb143e90bb3f0512
 ```
 
-If your address differs, set it in `.env`:
+Deposit 0.1 ETH to EntryPoint for MyPaymaster.
 
 ```bash
-COUNTER_ADDRESS=0xYourDeployedCounterAddress
+pnpm deposit
 ```
+
+To get current deposit amount, call `pnpm getdeposit`.
+
 
 ### Terminal 3 — delegate and call through the EOA
 
