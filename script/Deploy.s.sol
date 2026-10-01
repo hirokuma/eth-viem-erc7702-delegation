@@ -5,17 +5,17 @@ import {ERC4337Utils} from "@openzeppelin/contracts/account/utils/ERC4337Utils.s
 import {IEntryPoint} from "@openzeppelin/contracts/interfaces/IERC4337.sol";
 
 import {Script} from "forge-std/Script.sol";
-import {CounterAA} from "../src/CounterAA.sol";
+import {MyErc20} from "../src/MyErc20.sol";
 import {MyPaymaster} from "../src/MyPaymaster.sol";
 
 contract DeployScript is Script {
-    CounterAA public counter;
+    MyErc20 public erc20;
     MyPaymaster public paymaster;
 
     function run() public {
         vm.startBroadcast();
 
-        counter = new CounterAA();
+        erc20 = new MyErc20("MyErc20", "MET");
         paymaster = new MyPaymaster();
 
         vm.stopBroadcast();
