@@ -23,6 +23,7 @@ This project uses **viem v2** (stable release). The important detail is to pass 
 ## Install
 
 ```bash
+git submodule update --init
 pnpm install
 ```
 
@@ -36,10 +37,10 @@ Open three terminals.
 anvil --hardfork prague
 ```
 
-### Terminal 2 — deploy the Counter contract
+### Terminal 2 — deploy the Counter contract and EntryPoint v0.9
 
 ```bash
-pnpm deploy:anvil
+pnpm deploy
 ```
 
 The default deployed address on a fresh Anvil instance is:
@@ -63,10 +64,9 @@ pnpm delegate
 The script will:
 
 - create a fresh EOA,
-- fund it from the default Anvil account,
 - sign the EIP-7702 authorization,
 - send `setNumber(42)` with the authorization,
-- call `increment()` on the EOA address,
+- call `increment()` on the ERC-4337 handleOps,
 - print the resulting storage values.
 
 ## Project layout
