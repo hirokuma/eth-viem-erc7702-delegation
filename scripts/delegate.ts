@@ -21,7 +21,8 @@ import {
   type PublicClient,
 } from "viem";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
-import { mainnet } from "viem/chains";
+import { anvil } from "viem/chains";
+import { defineToken } from 'viem/tokens'
 
 // ---------------------------------------------------------------------------
 // PackedUserOperation
@@ -53,6 +54,7 @@ const PackedUserOperationComponent = [
 const entryPointAddress = '0x433709009B8330FDa32311DF1C2AFA402eD8D009';
 const simpleSmartAccount = '0xa46cc63eBF4Bd77888AA327837d20b23A63a56B5';
 const myPayMasterAddress = '0xe7f1725e7734ce288f8367e1bb143e90bb3f0512';
+const myErc20Address = '0x5fbdb2315678afecb367f032d93f642f64180aa3';
 
 const NONCE_KEY = 0x123400000000000000000000000000000000000000000000n;
 
@@ -180,7 +182,6 @@ async function signPackedUserOperation(
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
-const RPC_URL = "http://localhost:8545";
 
 // Anvil default funded account (index 0). Used to pay gas for the EOA.
 const FUNDER_PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -201,35 +202,42 @@ const accountAbi = parseAbi([
 ]);
 
 // Minimal local chain definition matching Anvil's chain id.
-const localChain = {
-  ...mainnet,
-  id: 31337,
-  name: "Anvil Local",
-  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-  rpcUrls: { default: { http: [RPC_URL] } },
-} as const satisfies Chain;
+const localChain = anvil;
+
+const myErc20 = defineToken({ 
+  addresses: {
+    31_337: myErc20Address,
+  },
+  decimals: 18,
+  name: 'MyErc20',
+  symbol: 'MET',
+  currency: 'JQA',
+  popular: false,
+});
 
 const publicClient = createPublicClient({
   chain: localChain,
-  transport: http(RPC_URL),
+  transport: http(),
+  tokens: [myErc20],
 });
 
 const eoaAccount = privateKeyToAccount(EOA_PRIVATE_KEY);
 const eoaWallet = createWalletClient({
   account: eoaAccount,
   chain: localChain,
-  transport: http(RPC_URL),
+  transport: http(),
+  tokens: [myErc20],
 });
 
 const funderAccount = privateKeyToAccount(FUNDER_PRIVATE_KEY);
 const funderWallet = createWalletClient({
   account: funderAccount,
   chain: localChain,
-  transport: http(RPC_URL),
+  transport: http(),
+  tokens: [myErc20],
 });
 
 async function main() {
-  console.log("RPC URL:", RPC_URL);
   console.log("EOA address:", eoaAccount.address);
   console.log("EOA private key (save this to reuse):", EOA_PRIVATE_KEY);
 
@@ -241,6 +249,23 @@ async function main() {
   // await publicClient.waitForTransactionReceipt({ hash: fundHash });
   let balance = await publicClient.getBalance({ address: eoaAccount.address });
   console.log("Funded EOA. Balance:", balance.toString(), "wei");
+
+  let ercBalance = await publicClient.token.getBalance({
+    account: funderAccount,
+    token: 'met',
+  });
+  console.log("Funder ERC20 Balance:", ercBalance.amount, myErc20.symbol);
+
+  const { value, formatted, receipt } = await funderWallet.token.transferSync({
+    amount: { decimals: myErc20.decimals, formatted: '1.23' },
+    to: eoaAccount.address,
+    token: 'met',
+  });
+  ercBalance = await publicClient.token.getBalance({
+    account: eoaAccount,
+    token: 'met',
+  });
+  console.log("EOA ERC20 Balance:", ercBalance.amount, myErc20.symbol);
 
   // 2. EOA code を Simple7702Account に向ける authorization に署名する。
   //    これを broadcast するのは funder（＝EOA とは別アカウント）なので
@@ -261,10 +286,13 @@ async function main() {
     value: 0n,
     authorizationList: [authorization],
   });
-  const receipt = await publicClient.waitForTransactionReceipt({ hash: setHash });
-  console.log("Delegation tx:", setHash);
-  console.log("  status:", receipt.status);
-  console.log("  gasUsed:", receipt.gasUsed.toString());
+
+  {
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: setHash });
+    console.log("Delegation tx:", setHash);
+    console.log("  status:", receipt.status);
+    console.log("  gasUsed:", receipt.gasUsed.toString());
+  }
 
   // 4. EOA 経由で Simple7702Account が返ることを確認（＝delegate 成功）。
   const ep = await publicClient.readContract({
