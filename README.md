@@ -1,19 +1,8 @@
 # ERC-7702 Delegation Sample (Foundry + viem)
 
-A minimal sample that deploys a simple `Counter` contract with Foundry, then registers it as an [ERC-7702](https://eips.ethereum.org/EIPS/eip-7702) delegation for a fresh EOA using [viem](https://viem.sh/docs/eip7702/contract-writes).
-
-After delegation, the EOA address behaves like the `Counter` contract, using the EOA's own storage.
+Sample code for Gassless with ERC-7702 + ERC-4337 + [Simple7702Account](https://github.com/eth-infinitism/account-abstraction/blob/v0.9.0/contracts/accounts/Simple7702Account.sol).
 
 This project uses **viem v2** (stable release). The important detail is to pass `executor: 'self'` when signing the EIP-7702 authorization, because the authorizing EOA also submits the transaction.
-
-## What this demonstrates
-
-1. Deploy a `Counter` contract with Foundry `forge script`.
-2. Create and sign an EIP-7702 authorization (EOA code → `Counter`).
-3. Broadcast the authorization in a transaction.
-4. Call `Counter` functions on the EOA address.
-5. Verify storage is held in the EOA account.
-6. Verify the EOA code slot contains the delegation designator (`0xef0100 || counterAddress`).
 
 ## Prerequisites
 
@@ -37,7 +26,7 @@ Open three terminals.
 anvil --hardfork prague
 ```
 
-### Terminal 2 — deploy the Counter contract and EntryPoint v0.9
+### Terminal 2 — deploy the contracts and EntryPoint v0.9
 
 ```bash
 pnpm deploy
@@ -69,9 +58,10 @@ pnpm delegate
 The script will:
 
 - create a fresh EOA,
+- fund the EOA with MyERC20,
 - sign the EIP-7702 authorization,
-- send `setNumber(42)` with the authorization,
-- call `increment()` on the ERC-4337 handleOps,
+- send `sendTransaction()` for the authorization,
+- send `transfer()` on the ERC-4337 handleOps,
 - print the resulting storage values.
 
 ## Project layout
@@ -80,11 +70,12 @@ The script will:
 .
 ├── foundry.toml          # Foundry config (solc 0.8.28, evm_version = prague)
 ├── src/
-│   └── Counter.sol       # Simple delegation target
+│   ├── MyErc20.sol      # Sample ERC-20
+│   └── MyPaymaster.sol  # Paymaster sample
 ├── script/
-│   └── Counter.s.sol     # Deployment script
+│   └── Deploy.s.sol     # Deployment script
 ├── scripts/
-│   └── delegate.ts       # viem ERC-7702 sample
+│   └── delegate.ts      # viem ERC-7702 sample
 ├── package.json
 ├── tsconfig.json
 └── .env.example
@@ -100,4 +91,3 @@ The script will:
 ## License
 
 MIT
-
