@@ -14,6 +14,7 @@ import {
   encodeFunctionData,
   http,
   parseAbi,
+  parseEther,
   recoverAddress,
   type Address,
   type Chain,
@@ -52,9 +53,11 @@ const PackedUserOperationComponent = [
 ];
 
 const entryPointAddress = '0x433709009B8330FDa32311DF1C2AFA402eD8D009';
-const simpleSmartAccount = '0xa46cc63eBF4Bd77888AA327837d20b23A63a56B5';
 const myPayMasterAddress = '0xe7f1725e7734ce288f8367e1bb143e90bb3f0512';
 const myErc20Address = '0x5fbdb2315678afecb367f032d93f642f64180aa3';
+
+// lib/account-abstraction/deployments/localhost/Simple7702Account.json
+const simpleSmartAccount = '0xa46cc63eBF4Bd77888AA327837d20b23A63a56B5';
 
 const NONCE_KEY = 0x123400000000000000000000000000000000000000000000n;
 
@@ -238,153 +241,190 @@ const funderWallet = createWalletClient({
 });
 
 async function main() {
-  console.log("EOA address:", eoaAccount.address);
-  console.log("EOA private key (save this to reuse):", EOA_PRIVATE_KEY);
-
-  // 1. Fund the EOA so it can pay for its own delegation transaction.
-  // const fundHash = await funderWallet.sendTransaction({
-  //   to: eoaAccount.address,
-  //   value: parseEther("10"),
-  // });
-  // await publicClient.waitForTransactionReceipt({ hash: fundHash });
-  let balance = await publicClient.getBalance({ address: eoaAccount.address });
-  console.log("Funded EOA. Balance:", balance.toString(), "wei");
-
-  let ercBalance = await publicClient.token.getBalance({
-    account: funderAccount,
-    token: 'met',
-  });
-  console.log("Funder ERC20 Balance:", ercBalance.amount, myErc20.symbol);
-
-  const { value, formatted, receipt } = await funderWallet.token.transferSync({
-    amount: { decimals: myErc20.decimals, formatted: '1.23' },
-    to: eoaAccount.address,
-    token: 'met',
-  });
-  ercBalance = await publicClient.token.getBalance({
-    account: eoaAccount,
-    token: 'met',
-  });
-  console.log("EOA ERC20 Balance:", ercBalance.amount, myErc20.symbol);
-
-  // 2. EOA code を Simple7702Account に向ける authorization に署名する。
-  //    これを broadcast するのは funder（＝EOA とは別アカウント）なので
-  //    executor は 'self' にしてはいけない。未指定なら viem は
-  //    「別アカウントが実行」と解釈し、nonce は EOA の現在値のまま（+1 しない）。
-  const authorization = await eoaWallet.signAuthorization({
-    account: eoaAccount,
-    contractAddress: simpleSmartAccount,
-    // executor: funderAccount.address, // 明示する場合（省略時と同じ結果）
-  });
-
-  // 3. authorizationList を載せた tx を broadcast する。
-  //    これで EOA の code が `0xef0100 || simpleSmartAccount` に書き換わる。
-  //    Simple7702Account は fallback/receive が payable なので、
-  //    本体呼び出し（空 calldata → receive）はそのまま成功する。
-  const setHash = await funderWallet.sendTransaction({
-    to: eoaAccount.address,
-    value: 0n,
-    authorizationList: [authorization],
-  });
+  console.log("ERC-20 address:", myErc20Address);
 
   {
+    const ercBalance = await publicClient.token.getBalance({
+      account: funderAccount,
+      token: 'met',
+    });
+    console.log("Funder ERC20 Balance:", ercBalance.amount, myErc20.symbol);
+    console.log();
+
+    console.log("EOA address:", eoaAccount.address);
+    console.log("EOA private key (save this to reuse):", EOA_PRIVATE_KEY);
+    const balance = await publicClient.getBalance({ address: eoaAccount.address });
+    console.log("EOA balance:", balance.toString(), "wei");
+  }
+  console.log();
+
+  //
+  // 1. Fund the EOA with ERC-20
+  //
+
+  {
+    const _ = await funderWallet.token.transferSync({
+      amount: { formatted: '1.23' },
+      to: eoaAccount.address,
+      token: 'met',
+    });
+    const ercBalance = await publicClient.token.getBalance({
+      account: eoaAccount,
+      token: 'met',
+    });
+    console.log("EOA ERC20 balance:", ercBalance.amount, myErc20.symbol);
+  }
+  console.log();
+
+  //
+  // 2. Link the EOA and Smart Account via ERC-7702 delegation
+  //
+
+  {
+    // EOA code を Simple7702Account に向ける authorization に署名する。
+    //    これを broadcast するのは funder（＝EOA とは別アカウント）なので
+    //    executor は 'self' にしてはいけない。未指定なら viem は
+    //    「別アカウントが実行」と解釈し、nonce は EOA の現在値のまま（+1 しない）。
+    const authorization = await eoaWallet.signAuthorization({
+      account: eoaAccount,
+      contractAddress: simpleSmartAccount,
+      // executor: funderAccount.address, // 明示する場合（省略時と同じ結果）
+    });
+
+    // authorizationList を載せた tx を broadcast する。
+    //    これで EOA の code が `0xef0100 || simpleSmartAccount` に書き換わる。
+    //    Simple7702Account は fallback/receive が payable なので、
+    //    本体呼び出し（空 calldata → receive）はそのまま成功する。
+    const setHash = await funderWallet.sendTransaction({
+      to: eoaAccount.address,
+      value: 0n,
+      authorizationList: [authorization],
+    });
+
     const receipt = await publicClient.waitForTransactionReceipt({ hash: setHash });
     console.log("Delegation tx:", setHash);
     console.log("  status:", receipt.status);
     console.log("  gasUsed:", receipt.gasUsed.toString());
+
+    // EOA 経由で Simple7702Account が返ることを確認（＝delegate 成功）。
+    const ep = await publicClient.readContract({
+      address: eoaAccount.address,
+      abi: accountAbi,
+      functionName: "entryPoint",
+    });
+    if (ep.toLowerCase() !== entryPointAddress.toLowerCase()) {
+      throw new Error(`delegation not applied: entryPoint()=${ep}`);
+    }
+    console.log("Register delegation for the EOA.");
   }
+  console.log();
 
-  // 4. EOA 経由で Simple7702Account が返ることを確認（＝delegate 成功）。
-  const ep = await publicClient.readContract({
-    address: eoaAccount.address,
-    abi: accountAbi,
-    functionName: "entryPoint",
-  });
-  console.log("EOA.entryPoint():", ep);
-  if (ep.toLowerCase() !== entryPointAddress.toLowerCase()) {
-    throw new Error(`delegation not applied: entryPoint()=${ep}`);
+  //
+  // 3. Get ERC-20 balance after delegation
+  //
+
+  {
+    const balance = await publicClient.getBalance({ address: eoaAccount.address });
+    console.log("EOA balance1:", balance.toString(), "wei");
+    const ercBalance = await publicClient.token.getBalance({
+      account: eoaAccount,
+      token: 'met',
+    });
+    console.log("EOA ERC20 balance1:", ercBalance.amount, myErc20.symbol);
   }
+  console.log();
 
-  balance = await publicClient.getBalance({ address: eoaAccount.address });
-  console.log("EOA Balance1:", balance.toString(), "wei");
-  return;
+  //
+  // 4. Transfer ERC-20 from EOA to Funder
+  //
 
-  // 5. Call increment() on the EOA address. No authorization needed anymore
-  //    because the EOA code is already delegated.
+  {
+    const nonce = await getNonce(publicClient, eoaAccount.address, NONCE_KEY);
 
-  // // funder から: EntryPoint.depositTo(eoaAccount.address)
-  // await funderWallet.writeContract({
-  //   address: entryPointAddress,
-  //   abi: parseAbi(["function depositTo(address account) payable"]),
-  //   functionName: "depositTo",
-  //   args: [eoaAccount.address],
-  //   value: parseEther("0.1"),
-  // });
+    // 実行したい「中身」の calldata（MyErc20.transfer）。
+    const transferCallData = encodeFunctionData({
+      abi: parseAbi([
+        'function transfer(address _to, uint256 _value) public returns (bool success)',
+      ]),
+      functionName: 'transfer',
+      args: [funderAccount.address, parseEther("0.23")]
+    });
 
-  const nonce = await getNonce(publicClient, eoaAccount.address, NONCE_KEY);
-  const incCallData = encodeFunctionData({
-    abi: parseAbi([
-      'function increment() public',
-    ]),
-    functionName: 'increment',
-    args: []
-  });
-  const unsignedOp = createPackedUserOperation(eoaAccount.address, nonce, incCallData);
-  const signature = await signPackedUserOperation(publicClient, unsignedOp, eoaAccount.address, EOA_PRIVATE_KEY);
-  const signedOp: PackedUserOperation = { ...unsignedOp, signature: signature };
+    // UserOp.callData は「sender 本体を呼ぶための calldata」であって、
+    // 実行したい呼び出しそのものではない。EntryPoint は
+    // sender.call(callData) するだけなので、account が実行を解釈できる
+    // 形にラップする必要がある。
+    //
+    // デプロイ済みの Simple7702Account (account-abstraction v0.9.0) は
+    // ERC-7821 実装ではなく BaseAccount 実装で、実行用セレクタは
+    //   execute(address,uint256,bytes)        -> 0xb61d27f6
+    //   executeBatch((address,uint256,bytes)[]) -> 0x34fcd5be
+    // のみ。よって execute(...) でラップする。
+    //
+    // 生の transfer calldata をそのまま渡すと、Simple7702Account には
+    // transfer セレクタが無いので fallback()（payable・空実装）に落ち、
+    // revert もせず何も起きない（＝無言で no-op）。
+    const callData = encodeFunctionData({
+      abi: parseAbi([
+        'function execute(address target, uint256 value, bytes data)',
+      ]),
+      functionName: 'execute',
+      args: [myErc20Address, 0n, transferCallData],
+    });
 
-  balance = await publicClient.getBalance({ address: eoaAccount.address });
-  console.log("EOA Balance2:", balance.toString(), "wei");
+    const unsignedOp = createPackedUserOperation(eoaAccount.address, nonce, callData);
+    const signature = await signPackedUserOperation(publicClient, unsignedOp, eoaAccount.address, EOA_PRIVATE_KEY);
+    const signedOp: PackedUserOperation = { ...unsignedOp, signature: signature };
 
-  // EntryPoint v0.9 handleOps
-  const incHash = await funderWallet.writeContract({
-    address: entryPointAddress,
-    abi: [
-      {
-        type: 'function',
-        name: 'handleOps',
-        stateMutability: 'payable',
-        inputs: [
-          {
-            name: 'ops',
-            type: 'tuple[]',
-            components: PackedUserOperationComponent
-          },
-          {
-            name: 'beneficiary',
-            type: 'address'
-          }
-        ],
-        outputs: []
-      }
-    ] as const,
-    functionName: 'handleOps',
-    args: [[signedOp], funderAccount.address],
-    value: 0n
-  });
+    // EntryPoint v0.9 handleOps
+    const sendHash = await funderWallet.writeContract({
+      address: entryPointAddress,
+      abi: [
+        {
+          type: 'function',
+          name: 'handleOps',
+          stateMutability: 'payable',
+          inputs: [
+            {
+              name: 'ops',
+              type: 'tuple[]',
+              components: PackedUserOperationComponent
+            },
+            {
+              name: 'beneficiary',
+              type: 'address'
+            }
+          ],
+          outputs: []
+        }
+      ] as const,
+      functionName: 'handleOps',
+      args: [[signedOp], funderAccount.address],
+      value: 0n
+    });
+    console.log("handleOps transaction:", sendHash);
+    await publicClient.waitForTransactionReceipt({ hash: sendHash });
+  }
+  console.log();
 
-  balance = await publicClient.getBalance({ address: eoaAccount.address });
-  console.log("EOA Balance3:", balance.toString(), "wei");
+  //
+  // 5. Get ERC-20 balance after transfer
+  //
 
-  await publicClient.waitForTransactionReceipt({ hash: incHash });
-
-  const numberAfterInc = await publicClient.readContract({
-    address: eoaAccount.address,
-    abi: counterAbi,
-    functionName: "number",
-  });
-  console.log("EOA.number() after increment():", numberAfterInc.toString());
+  {
+    const balance = await publicClient.getBalance({ address: eoaAccount.address });
+    console.log("EOA balance2:", balance.toString(), "wei");
+    const ercBalance = await publicClient.token.getBalance({
+      account: eoaAccount,
+      token: 'met',
+    });
+    console.log("EOA ERC20 balance2:", ercBalance.amount, myErc20.symbol);
+  }
+  console.log();
 
   // 6. Verify the EOA code slot contains the delegation designator.
   const code = await publicClient.getCode({ address: eoaAccount.address });
   console.log("EOA deployed code (delegation designator):", code);
-
-  if (numberAfterInc !== 43n) {
-    throw new Error("Delegation did not work as expected");
-  }
-
-  balance = await publicClient.getBalance({ address: eoaAccount.address });
-  console.log("After EOA Balance:", balance.toString(), "wei");
 
   console.log("\nERC-7702 delegation sample completed successfully!");
 }
